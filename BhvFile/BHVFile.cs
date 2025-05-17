@@ -58,7 +58,7 @@ namespace BHVEditor
             Header.Unk02 = br.ReadInt16();
             Header.FileSize = br.ReadInt32();
             // skip unknown ints 0x08-0x1C (assert zero)
-            br.BaseStream.Seek(6 * 4, SeekOrigin.Current);
+            Header.UnknownHeader = br.ReadBytes(6 * 4);
             Header.StatesOffset = br.ReadInt32();
             Header.StateCount = br.ReadInt32();
             Header.OffsetB = br.ReadInt32();
@@ -255,7 +255,7 @@ namespace BHVEditor
 
             // Prepare transitions and conditions parsing
             foreach (var st in States) st.Transitions = new List<Transition>();
-            List<Condition> allConds = new List<Condition>();
+            
 
             foreach (var st in States)
             {
@@ -279,35 +279,52 @@ namespace BHVEditor
                 }
             }
 
-            // Conditions
+            // 2. 读取所有 Condition 头部，并累积到一个平面列表
+            var allConds = new List<Condition>();
             foreach (var st in States)
             {
                 foreach (var tr in st.Transitions)
                 {
-                    if (tr.ConditionCount > 0)
+                    if (tr.ConditionCount <= 0) continue;
+                    br.BaseStream.Seek(DATA_START + tr.ConditionsOffset, SeekOrigin.Begin);
+                    for (int c = 0; c < tr.ConditionCount; c++)
                     {
-                        br.BaseStream.Seek(DATA_START + tr.ConditionsOffset, SeekOrigin.Begin);
-                        for (int c = 0; c < tr.ConditionCount; c++)
+                        var cond = new Condition
                         {
-                            Condition cond = new Condition();
-                            cond.Id = br.ReadByte();
-                            cond.Unk01 = br.ReadByte();
-                            cond.Unk02 = br.ReadByte();
-                            cond.Unk03 = br.ReadByte();
-                            cond.DataOffset = br.ReadInt32();
-                            cond.Unk08 = br.ReadByte();
-                            cond.Unk09 = br.ReadByte();
-                            cond.Unk0A = br.ReadByte();
-                            cond.Unk0B = br.ReadByte();
-                            cond.Unk0C = br.ReadInt32();
-                            cond.Data = new List<byte>(); // will fill later
-                            tr.Conditions.Add(cond);
-                            allConds.Add(cond);
-                        }
+                            Id = br.ReadByte(),
+                            Unk01 = br.ReadByte(),
+                            Unk02 = br.ReadByte(),
+                            Unk03 = br.ReadByte(),
+                            DataOffset = br.ReadInt32(),
+                            Unk08 = br.ReadByte(),
+                            Unk09 = br.ReadByte(),
+                            Unk0A = br.ReadByte(),
+                            Unk0B = br.ReadByte(),
+                            Unk0C = br.ReadInt32(),
+                            Data = new List<byte>()
+                        };
+                        tr.Conditions.Add(cond);
+                        allConds.Add(cond);
                     }
                 }
             }
+            // 3. 按 DataOffset 升序读取变长 Data 区
+            allConds = allConds.OrderBy(c => c.DataOffset).ToList();
+            for (int i = 0; i < allConds.Count; i++)
+            {
+                var cond = allConds[i];
+                // 结束偏移：下一条的 DataOffset 或 B 段起始
+                int nextOffset = (i < allConds.Count - 1)
+                    ? allConds[i + 1].DataOffset
+                    : Header.OffsetB;
+                int length = nextOffset - cond.DataOffset;
+                if (length < 0) length = 0;
+                cond.DataLength = length;  // 可选：保存长度便于调试或 UI
 
+                // 真正读取
+                br.BaseStream.Seek(DATA_START + cond.DataOffset, SeekOrigin.Begin);
+                cond.Data = br.ReadBytes(length).ToList();
+            }
             // StructABB
             foreach (var st in States)
             {
@@ -436,8 +453,16 @@ namespace BHVEditor
             bw.Write(Header.Unk02);
             // fileSize (placeholder)
             bw.Write(0);
-            // unk08-unk1C (6 ints zeros)
-            for (int i = 0; i < 6; i++) bw.Write(0);
+            // 写回 parse 时读到的 24 字节 UnknownHeader
+            if (Header.UnknownHeader != null && Header.UnknownHeader.Length == 24)
+            {
+                bw.Write(Header.UnknownHeader);
+            }
+            else
+            {
+                // 兜底填零
+                for (int i = 0; i < 24; i++) bw.Write((byte)0);
+            }
             // offsets and counts placeholders
             bw.Write(0); // statesOffset
             bw.Write(Header.StateCount);
@@ -449,18 +474,18 @@ namespace BHVEditor
             bw.Write(0); // offsetD
             bw.Write(Header.CountD);
 
-            // Mystery block
+            // 写版本依赖的 mystery block
             if (fileType == BHVType.BASENORMAL)
             {
-                byte[] mystery = Header.MysteryBlock ?? new byte[0xE0];
-                if (mystery.Length != 0xE0) Array.Resize(ref mystery, 0xE0);
-                bw.Write(mystery);
+                var mb = Header.MysteryBlock ?? new byte[0xE0];
+                if (mb.Length != 0xE0) Array.Resize(ref mb, 0xE0);
+                bw.Write(mb);
             }
             else if (fileType == BHVType.W)
             {
-                byte[] mystery = Header.MysteryBlock ?? new byte[0x40];
-                if (mystery.Length != 0x40) Array.Resize(ref mystery, 0x40);
-                bw.Write(mystery);
+                var mb = Header.MysteryBlock ?? new byte[0x40];
+                if (mb.Length != 0x40) Array.Resize(ref mb, 0x40);
+                bw.Write(mb);
             }
             // if WEAPON, no mystery to write
 
@@ -743,16 +768,16 @@ namespace BHVEditor
                     }
                 }
             }
-            // Write Condition data bytes
+            // 写 Condition 数据区
             foreach (var st in States)
             {
                 foreach (var tr in st.Transitions)
                 {
                     foreach (var cond in tr.Conditions)
                     {
-                        if (cond.Data != null && cond.Data.Count > 0)
+                        if (cond.DataLength > 0 && cond.Data.Count >= cond.DataLength)
                         {
-                            bw.Write(cond.Data.ToArray());
+                            bw.Write(cond.Data.ToArray(), 0, cond.DataLength);
                         }
                     }
                 }
@@ -943,6 +968,19 @@ namespace BHVEditor
         public short Version { get; set; }
         public short Unk02 { get; set; }
         public int FileSize { get; set; }
+
+        // 新增：保存 0x08-0x1C 这 6 个 int
+        [JsonIgnore]
+        public byte[] UnknownHeader { get; set; }
+        // 把上面原始字节以 HEX 字符串形式输出到 JSON
+        [JsonProperty("UnknownHeaderHex")]
+        public string UnknownHeaderHex
+        {
+            get => UnknownHeader != null
+                ? BitConverter.ToString(UnknownHeader).Replace("-", " ")
+                : null;
+            set => UnknownHeader = ParseHexString(value, expectedLength: 24);
+        }
         public int StatesOffset { get; set; }
         public int StateCount { get; set; }
         public int OffsetB { get; set; }
@@ -952,8 +990,52 @@ namespace BHVEditor
         public short SizeC { get; set; }
         public int OffsetD { get; set; }
         public int CountD { get; set; }
-        [JsonIgnore] public byte[] MysteryBlock { get; set; } = null;
+
+        // 原有：保存版本依赖的 “mystery block”
+        [JsonIgnore]
+        public byte[] MysteryBlock { get; set; }
+        // 也公开为 HEX 让 JSON 能看到
+        [JsonProperty("MysteryBlockHex")]
+        public string MysteryBlockHex
+        {
+            get => MysteryBlock != null
+                ? BitConverter.ToString(MysteryBlock).Replace("-", " ")
+                : null;
+            set
+            {
+                // 长度不固定，解析所有给定的字节
+                MysteryBlock = ParseHexString(value, expectedLength: -1);
+            }
+        }
+        /// <summary>
+        /// 工具：把 "AA BB CC" 样式的 HEX 字符串转成字节数组
+        /// 如果 expectedLength&gt;=0，则校验长度，否则不校验
+        /// </summary>
+        private static byte[] ParseHexString(string hex, int expectedLength)
+        {
+            if (string.IsNullOrWhiteSpace(hex))
+                return expectedLength >= 0
+                    ? new byte[expectedLength]
+                    : Array.Empty<byte>();
+
+            // 支持空格或连字符分隔
+            var parts = hex
+                .Trim()
+                .Replace("-", " ")
+                .Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+
+            var bytes = parts.Select(s => Convert.ToByte(s, 16)).ToArray();
+            if (expectedLength >= 0 && bytes.Length != expectedLength)
+            {
+                // 如果长度不符，自动填零或截断
+                var tmp = new byte[expectedLength];
+                Array.Copy(bytes, tmp, Math.Min(bytes.Length, expectedLength));
+                return tmp;
+            }
+            return bytes;
+        }
     }
+
 
     public class State
     {
@@ -1026,12 +1108,15 @@ namespace BHVEditor
         public byte Unk02 { get; set; }
         public byte Unk03 { get; set; }
         public int DataOffset { get; set; }
+        // 新增：记录每条 Data 的长度
+        public int DataLength { get; set; }
         public byte Unk08 { get; set; }
         public byte Unk09 { get; set; }
         public byte Unk0A { get; set; }
         public byte Unk0B { get; set; }
         public int Unk0C { get; set; }
         public List<byte> Data { get; set; } = new List<byte>();
+
     }
 
     public class StructABB

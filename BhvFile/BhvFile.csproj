@@ -66,6 +66,9 @@
     <Compile Include="StateEditorControl.cs">
       <SubType>UserControl</SubType>
     </Compile>
+    <Compile Include="StructBEditorControl.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
     <EmbeddedResource Include="Properties\Resources.resx">
       <Generator>ResXFileCodeGenerator</Generator>
       <LastGenOutput>Resources.Designer.cs</LastGenOutput>

@@ -24,6 +24,12 @@ namespace BHVEditor
         private readonly Font nodeFont = new Font("Arial", 9);
         private readonly StringFormat textFmt;
 
+        // 缩放和平移
+        private float scale = 1.0f;
+        private PointF panOffset = new PointF(0, 0);
+        private bool panning = false;
+        private Point lastPanPoint;
+
         private Node draggingNode;
         private Point dragOffset;
         private Node pendingTransitionSource;
@@ -40,12 +46,17 @@ namespace BHVEditor
             arrowPen.CustomEndCap = new AdjustableArrowCap(6, 6, true);
 
             textFmt = new StringFormat
-            { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+            {
+                Alignment = StringAlignment.Center,
+                LineAlignment = StringAlignment.Center
+            };
 
+            // 事件订阅
             MouseDown += OnMouseDown;
             MouseUp += OnMouseUp;
             MouseMove += OnMouseMove;
             MouseDoubleClick += OnMouseDoubleClick;
+            MouseWheel += OnMouseWheel;
             KeyDown += OnKeyDown;
             PreviewKeyDown += (s, e) =>
             {
@@ -53,6 +64,9 @@ namespace BHVEditor
                     e.KeyCode == Keys.Left || e.KeyCode == Keys.Right)
                     e.IsInputKey = true;
             };
+            SetStyle(ControlStyles.AllPaintingInWmPaint |
+                     ControlStyles.UserPaint |
+                     ControlStyles.OptimizedDoubleBuffer, true);
 
             InitContextMenu();
         }
@@ -147,8 +161,21 @@ namespace BHVEditor
                 var st = currentFile.States[i];
                 int col = i % cols, row = i / cols;
                 var pos = new Point(50 + col * spacingX, 50 + row * spacingY);
-                nodes.Add(new Node(st, $"State {st.Index}", pos));
+                // 获取对应 StructB.Unk00
+                string label = $"S{st.Index}\nU00={GetStructUnk00(st)}";
+                nodes.Add(new Node(st, label, pos));
             }
+            // 设置滚动区域，保证所有节点可见
+            int maxX = nodes.Max(n2 => n2.Position.X) + nodeSize.Width + 50;
+            int maxY = nodes.Max(n2 => n2.Position.Y) + nodeSize.Height + 50;
+            AutoScrollMinSize = new Size(maxX, maxY);
+        }
+        private string GetStructUnk00(State st)
+        {
+            int idx = st.StructBid;
+            if (idx >= 0 && idx < currentFile.StructBs.Count)
+                return currentFile.StructBs[idx].Unk00.ToString();
+            return "-";
         }
 
         private void PushHistory()
@@ -165,16 +192,16 @@ namespace BHVEditor
             ctxMenu = new ContextMenuStrip();
             ctxMenu.Opening += (s, e) =>
             {
-                var global = Control.MousePosition;
-                var pt = PointToClient(global);
+                var clientPt = PointToClient(Control.MousePosition);
+                var worldPt = ScreenToWorld(clientPt);
                 ctxMenu.Items.Clear();
 
-                var node = FindNodeAt(pt);
-                var trHit = FindTransitionAt(pt);
+                var node = FindNodeAt(worldPt);
+                var trHit = FindTransitionAt(worldPt);
                 if (trHit != null)
                 {
-                    ctxMenu.Items.Add("删除转换", null, (sender, args) => DeleteTransition(pt));
-                    ctxMenu.Items.Add("属性...", null, (sender, args) => ShowTransitionProps(pt));
+                    ctxMenu.Items.Add("删除转换", null, (sender, args) => DeleteTransition(worldPt));
+                    ctxMenu.Items.Add("属性...", null, (sender, args) => ShowTransitionProps(worldPt));
                 }
                 else if (node != null)
                 {
@@ -204,7 +231,6 @@ namespace BHVEditor
             };
             ContextMenuStrip = ctxMenu;
         }
-
         private void UpdateUndoRedoMenu()
         {
             if (menuUndo != null) menuUndo.Enabled = historyIndex > 0;
@@ -258,37 +284,63 @@ namespace BHVEditor
         private void OnMouseDown(object s, MouseEventArgs e)
         {
             Focus();
+            if (e.Button == MouseButtons.Middle)
+            {
+                panning = true;
+                lastPanPoint = e.Location;
+                return;
+            }
             if (e.Button == MouseButtons.Left)
             {
-                var nd = FindNodeAt(e.Location);
+                var wp = ScreenToWorld(e.Location);
+                var nd = FindNodeAt(wp);
                 if (nd != null)
                 {
                     draggingNode = nd;
-                    dragOffset = new Point(e.X - nd.Position.X, e.Y - nd.Position.Y);
+                    dragOffset = new Point(wp.X - nd.Position.X, wp.Y - nd.Position.Y);
                 }
             }
         }
 
         private void OnMouseMove(object s, MouseEventArgs e)
         {
+            if (panning && e.Button == MouseButtons.Middle)
+            {
+                panOffset.X += e.X - lastPanPoint.X;
+                panOffset.Y += e.Y - lastPanPoint.Y;
+                lastPanPoint = e.Location;
+                Invalidate();  // 整面重绘
+                return;
+            }
             if (draggingNode != null && e.Button == MouseButtons.Left)
             {
-                draggingNode.Position = new Point(e.X - dragOffset.X, e.Y - dragOffset.Y);
+                // 拖节点
+                var wp = ScreenToWorld(e.Location);
+                draggingNode.Position = new Point(
+                    wp.X - dragOffset.X,
+                    wp.Y - dragOffset.Y
+                );
                 Invalidate();
             }
         }
 
         private void OnMouseUp(object s, MouseEventArgs e)
         {
+            if (e.Button == MouseButtons.Middle)
+            {
+                panning = false;
+                return;
+            }
             if (e.Button == MouseButtons.Left)
             {
+                var wp = ScreenToWorld(e.Location);
                 if (draggingNode != null)
                 {
                     draggingNode = null;
                 }
                 else if (pendingTransitionSource != null)
                 {
-                    var tgt = FindNodeAt(e.Location);
+                    var tgt = FindNodeAt(wp);
                     if (tgt != null && tgt != pendingTransitionSource)
                         AddTransition(pendingTransitionSource, tgt);
                     pendingTransitionSource = null;
@@ -300,17 +352,35 @@ namespace BHVEditor
 
         private void OnMouseDoubleClick(object s, MouseEventArgs e)
         {
-            var nd = FindNodeAt(e.Location);
+            var wp = ScreenToWorld(e.Location);
+            var nd = FindNodeAt(wp);
             if (nd != null) ShowStateProps(nd);
-            else if (FindTransitionAt(e.Location) != null) ShowTransitionProps(e.Location);
+            else if (FindTransitionAt(wp) != null) ShowTransitionProps(wp);
         }
 
+        private void OnMouseWheel(object sender, MouseEventArgs e)
+        {
+            var before = ScreenToWorld(e.Location);
+            scale *= e.Delta > 0 ? 1.1f : 0.9f;
+            var after = ScreenToWorld(e.Location);
+
+            // 保持鼠标位置处不动
+            panOffset.X += (after.X - before.X) * scale;
+            panOffset.Y += (after.Y - before.Y) * scale;
+            Invalidate();
+        }
         private void OnKeyDown(object s, KeyEventArgs e)
         {
             if (e.Control && e.KeyCode == Keys.Z) { Undo(); e.SuppressKeyPress = true; }
             else if (e.Control && e.KeyCode == Keys.Y) { Redo(); e.SuppressKeyPress = true; }
         }
-
+        private Point ScreenToWorld(Point screenPt)
+        {
+            return new Point(
+                (int)((screenPt.X - panOffset.X) / scale),
+                (int)((screenPt.Y - panOffset.Y) / scale)
+            );
+        }
         #endregion
 
         #region 节点/转换 查找 & 操作
@@ -359,21 +429,26 @@ namespace BHVEditor
         private void AddTransition(Node src, Node dst)
         {
             var st = src.State;
-            var tr = new Transition { StateIndex = dst.State.Index };
+            var tr = new Transition
+            {
+                StateIndex = dst.State.Index
+            };
             st.Transitions.Add(tr);
             st.TransitionCount = st.Transitions.Count;
             PushHistory();
             Invalidate();
         }
 
-        private void DeleteTransition(Point p)
+        private void DeleteTransition(Point worldPt)
         {
-            var hit = FindTransitionAt(p);
+            var hit = FindTransitionAt(worldPt);
             if (hit != null)
             {
                 hit.Item1.Transitions.Remove(hit.Item2);
                 hit.Item1.TransitionCount = hit.Item1.Transitions.Count;
             }
+            PushHistory();
+            Invalidate();
         }
 
         private void AddState()
@@ -445,9 +520,9 @@ namespace BHVEditor
             PushHistory();
         }
 
-        private void ShowTransitionProps(Point p)
+        private void ShowTransitionProps(Point worldPt)
         {
-            var hit = FindTransitionAt(p);
+            var hit = FindTransitionAt(worldPt);
             if (hit != null) ShowTransitionProps(hit.Item1, hit.Item2);
         }
         private void ShowTransitionProps(State st, Transition tr)
@@ -455,8 +530,12 @@ namespace BHVEditor
             using var f = new Form { Text = $"转换 {st.Index}→{tr.StateIndex}", Size = new Size(400, 400) };
             var pg = new PropertyGrid { Dock = DockStyle.Fill, SelectedObject = tr };
             f.Controls.Add(pg);
-            f.ShowDialog();
-            PushHistory();
+            if (f.ShowDialog() == DialogResult.OK)
+            {
+                RecalcAllCountsAndOffsets();
+                PushHistory();
+                Invalidate();
+            }
         }
 
         #endregion
@@ -467,6 +546,11 @@ namespace BHVEditor
         {
             base.OnPaint(e);
             var g = e.Graphics;
+            g.Clear(BackColor);
+            g.ResetTransform();
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TranslateTransform(panOffset.X, panOffset.Y);
+            g.ScaleTransform(scale, scale);
             g.SmoothingMode = SmoothingMode.AntiAlias;
 
             // 先画所有连线
@@ -514,7 +598,33 @@ namespace BHVEditor
                 center.Y + (int)(uy * t)
             );
         }
+        public void SaveBHV(string path)
+        {
+            // 先把所有 count／offset 重新根据 List<> 同步一遍
+            RecalcAllCountsAndOffsets();
 
+            // 真正写文件
+            currentFile.Save(path);
+        }
+
+        private void RecalcAllCountsAndOffsets()
+        {
+            // 1) 头部的各个段数量
+            currentFile.Header.StateCount = currentFile.States.Count;
+            currentFile.Header.CountB = currentFile.StructBs.Count;
+            currentFile.Header.CountC = (short)currentFile.StructCs.Count;
+            currentFile.Header.CountD = currentFile.StructDs.Count;
+
+            // 2) 每个 State 里的 TransitionCount
+            foreach (var st in currentFile.States)
+            {
+                st.TransitionCount = st.Transitions?.Count ?? 0;
+                // 3) 每个 Transition 里的 ConditionCount
+                foreach (var tr in st.Transitions)
+                    tr.ConditionCount = tr.Conditions?.Count ?? 0;
+            }
+            // 其它 offset（Offset04、TransitionsOffset 等）都在 BHVFile.Write 里会根据这些 Count 自动计算
+        }
         #endregion
     }
 }

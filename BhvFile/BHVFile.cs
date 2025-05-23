@@ -4,7 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using Newtonsoft.Json;
-
+using System.ComponentModel;
 namespace BHVEditor
 {
     public class BHVFile
@@ -440,6 +440,29 @@ namespace BHVEditor
 
         private void Write(BinaryWriter bw)
         {
+                        // 1) 先遍历一遍所有 Transition，确保 StructAbb.Type 和 Unk01 对应一致
+            foreach (var st in States)
+                            {
+                                foreach (var tr in st.Transitions)
+                                    {
+                                        if (tr.StructAbb == null)
+                       tr.StructAbb = new StructABB();
+                                        // 根据 Unk01 强制设置 Type
+                                        switch (tr.StructAbb.Unk01)
+                                        {
+                        case 1:
+                        tr.StructAbb.Type = 1; break;
+                                                case 3:
+                        tr.StructAbb.Type = 3; break;
+                                                case 4:
+                        tr.StructAbb.Type = 4; break;
+                        default: tr.StructAbb.Type = 0; break;
+                                            }
+                                        // 如果是类型1，也要保证 Unk01=1
+                                        if (tr.StructAbb.Type == 1)
+                        tr.StructAbb.Unk01 = 1;
+                                    }
+                            }
             // Recalculate dynamic header fields
             Header.StateCount = (States != null ? States.Count : 0);
             Header.CountB = (StructBs != null ? StructBs.Count : 0);
@@ -694,17 +717,32 @@ namespace BHVEditor
                 }
             }
             // Write StructABB data
+            // —— 写入 StructABB 数据区，确保对齐 ——  
             foreach (var st in States)
             {
                 foreach (var tr in st.Transitions)
                 {
-                    StructABB abb = tr.StructAbb;
-                    if (abb == null) abb = new StructABB();
+                    var abb = tr.StructAbb ?? new StructABB();
+                    // 1) 确定 “内容长度”  
+                    int contentSize = abb.Type switch
+                    {
+                        1 => 28,    // 标准浮点版，28 字节数据  
+                        3 => 32,    // 整型版，32 字节数据  
+                        4 => 56,    // 带额外字段版，56 字节数据  
+                        _ => 4      // 默认只写头部 4 字节  
+                    };
+                    // 2) 计算整块长度（32 的倍数）  
+                    int allocSize = ((contentSize + 31) / 32) * 32;
+
+                    // 3) 写入内容  
+                    // 3.1 先写四字节头（Unk00~Unk03）  
                     bw.Write(abb.Unk00);
                     bw.Write(abb.Unk01);
                     bw.Write(abb.Unk02);
                     bw.Write(abb.Unk03);
-                    if (abb.Unk01 == 1)
+
+                    // 3.2 根据类型写入剩余字段  
+                    if (abb.Type == 1)
                     {
                         bw.Write(abb.BehaviorMatrixParam_f);
                         bw.Write(abb.Unk08_int);
@@ -712,10 +750,8 @@ namespace BHVEditor
                         bw.Write(abb.Unk10_int);
                         bw.Write(abb.Unk14_int);
                         bw.Write(abb.Unk18_int);
-                        // padding to 32 bytes
-                        bw.Write(0);
                     }
-                    else if (abb.Unk01 == 3)
+                    else if (abb.Type == 3)
                     {
                         bw.Write(abb.BehaviorMatrixParam_i);
                         bw.Write(abb.Unk08_f);
@@ -725,7 +761,7 @@ namespace BHVEditor
                         bw.Write(abb.Unk18_int);
                         bw.Write(abb.Unk1C_int);
                     }
-                    else if (abb.Unk01 == 4)
+                    else if (abb.Type == 4)
                     {
                         bw.Write(abb.Unk04);
                         bw.Write(abb.Unk08_f);
@@ -739,15 +775,15 @@ namespace BHVEditor
                         bw.Write(abb.Unk28_int);
                         bw.Write(abb.Unk2C_int);
                         bw.Write(abb.Unk30_int);
-                        // padding to 64 bytes (we wrote 52, pad 12):
-                        for (int p = 0; p < 3; p++) bw.Write(0);
                     }
-                    else
-                    {
-                        // Unknown ABB type, write nothing beyond first 4 bytes (we already wrote 4 bytes).
-                    }
+
+                    // 4) 补零到 allocSize  
+                    int padBytes = allocSize - contentSize;
+                    for (int i = 0; i < padBytes; i++)
+                        bw.Write((byte)0);
                 }
             }
+
             // Write Condition structures
             foreach (var st in States)
             {
@@ -783,6 +819,8 @@ namespace BHVEditor
                 }
             }
             // Write StructB entries
+            long absPosB = bw.BaseStream.Position;
+            Header.OffsetB = (int)(absPosB - DATA_START);
             if (StructBs != null)
             {
                 foreach (var sb in StructBs)
@@ -832,6 +870,8 @@ namespace BHVEditor
                 }
             }
             // Write StructC entries
+            long absPosC = bw.BaseStream.Position;
+            Header.OffsetC = (int)(absPosC - DATA_START);
             if (StructCs != null)
             {
                 foreach (var cdata in StructCs)
@@ -840,7 +880,8 @@ namespace BHVEditor
                 }
             }
             // Write StructD entries
-            long structDStartPos = bw.BaseStream.Position;
+            long absPosD = bw.BaseStream.Position;
+            Header.OffsetD = (int)(absPosD - DATA_START);
             if (StructDs != null)
             {
                 // We should update Header.OffsetD in case it changed after writing C
@@ -1042,8 +1083,13 @@ namespace BHVEditor
         public int Index { get; set; }
         public short Unk00 { get; set; }
         public short Unk02 { get; set; }
+        [Browsable(false)][JsonIgnore]
         public int Offset04 { get; set; }
+
+        [Browsable(false)][JsonIgnore]
         public int TransitionsOffset { get; set; }
+
+        [Browsable(false)][JsonIgnore]
         public int TransitionCount { get; set; }
         public short StructBid { get; set; }
         public short Unk10 { get; set; }
@@ -1089,16 +1135,29 @@ namespace BHVEditor
 
     public class Transition
     {
+        public Transition()
+        {
+            StructAbb = new StructABB
+                        {
+                Unk01 = 1,
+                Type = 1
+            };
+        }
         public int StateIndex { get; set; }
+        [Browsable(false)][JsonIgnore]
         public int ConditionsOffset { get; set; }
+
+        [Browsable(false)][JsonIgnore]
         public int ConditionCount { get; set; }
+
+        [Browsable(false)][JsonIgnore]
         public int Offset0C { get; set; }
         public int Unk10 { get; set; }
         public int Unk14 { get; set; }
         public int Unk18 { get; set; }
         public int Unk1C { get; set; }
         public List<Condition> Conditions { get; set; } = new List<Condition>();
-        public StructABB StructAbb { get; set; } = new StructABB();
+        public StructABB StructAbb { get; set; }
     }
 
     public class Condition
@@ -1107,15 +1166,61 @@ namespace BHVEditor
         public byte Unk01 { get; set; }
         public byte Unk02 { get; set; }
         public byte Unk03 { get; set; }
+        [Browsable(false)][JsonIgnore]
         public int DataOffset { get; set; }
-        // 新增：记录每条 Data 的长度
+
+        [Browsable(false)][JsonIgnore]
         public int DataLength { get; set; }
         public byte Unk08 { get; set; }
         public byte Unk09 { get; set; }
         public byte Unk0A { get; set; }
         public byte Unk0B { get; set; }
         public int Unk0C { get; set; }
+        [Browsable(false)]
         public List<byte> Data { get; set; } = new List<byte>();
+        /// <summary>
+        /// 在属性面板里可见，输入逗号分隔的整数，
+        /// 每个整数将被序列化为4字节小端字节序。
+        /// 例如输入 "0,100280" 就会生成 8 字节数据。
+        /// </summary>
+        [Browsable(true)]
+        [DisplayName("Data Ints")]
+        [Description("逗号分隔的整数，每个整数写为4字节 (Little-Endian)")]
+        public string DataInts
+        {
+            get
+            {
+                // 把已有的 Data 拆成若干个 Int32 字符串
+                var ints = new List<int>();
+                for (int i = 0; i + 4 <= Data.Count; i += 4)
+                {
+                    ints.Add(BitConverter.ToInt32(Data.Skip(i).Take(4).ToArray(), 0));
+                }
+                return string.Join(",", ints);
+            }
+            set
+            {
+                var list = new List<byte>();
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    var parts = value.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+                    foreach (var part in parts)
+                    {
+                        if (int.TryParse(part.Trim(), out var n))
+                        {
+                            list.AddRange(BitConverter.GetBytes(n));
+                        }
+                        else
+                        {
+                            // 非法输入时就写 0，或者根据需要抛异常
+                            list.AddRange(BitConverter.GetBytes(0));
+                        }
+                    }
+                }
+                Data = list;
+                DataLength = Data.Count;
+            }
+        }
 
     }
 

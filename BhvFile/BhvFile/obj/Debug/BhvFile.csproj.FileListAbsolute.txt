@@ -1,0 +1,12 @@
+F:\BhvFormat\BhvFile\BhvFile\bin\Debug\BhvFile.exe.config
+F:\BhvFormat\BhvFile\BhvFile\bin\Debug\BhvFile.exe
+F:\BhvFormat\BhvFile\BhvFile\bin\Debug\BhvFile.pdb
+F:\BhvFormat\BhvFile\BhvFile\bin\Debug\Newtonsoft.Json.dll
+F:\BhvFormat\BhvFile\BhvFile\bin\Debug\Newtonsoft.Json.xml
+F:\BhvFormat\BhvFile\BhvFile\obj\Debug\BhvFile.csproj.AssemblyReference.cache
+F:\BhvFormat\BhvFile\BhvFile\obj\Debug\BhvFile.Properties.Resources.resources
+F:\BhvFormat\BhvFile\BhvFile\obj\Debug\BhvFile.csproj.GenerateResource.cache
+F:\BhvFormat\BhvFile\BhvFile\obj\Debug\BhvFile.csproj.CoreCompileInputs.cache
+F:\BhvFormat\BhvFile\BhvFile\obj\Debug\BhvFile.csproj.CopyComplete
+F:\BhvFormat\BhvFile\BhvFile\obj\Debug\BhvFile.exe
+F:\BhvFormat\BhvFile\BhvFile\obj\Debug\BhvFile.pdb

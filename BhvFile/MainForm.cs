@@ -5,15 +5,15 @@ using System.Windows.Forms;
 using Newtonsoft.Json;
 using System.ComponentModel;
 using System.Linq;
+using System.Collections.Generic;
 
 namespace BHVEditor
 {
     public partial class MainForm : Form
     {
-        private BHVFile currentFile;
         private StateEditorControl stateEditor;
         private StructBEditorControl structBEditor;
-
+        private StructCEditorControl structCEditor;
         public MainForm()
         {
             InitializeComponent();
@@ -28,8 +28,12 @@ namespace BHVEditor
             structBEditor = new StructBEditorControl { Dock = DockStyle.Fill };
             tabPageStructB.Controls.Add(structBEditor);
 
+            var tabPageStructC = new TabPage("StructC 编辑");
+            structCEditor = new StructCEditorControl { Dock = DockStyle.Fill };
+            tabPageStructC.Controls.Add(structCEditor);
             tab.TabPages.Add(tabPageState);
             tab.TabPages.Add(tabPageStructB);
+            tab.TabPages.Add(tabPageStructC);
 
             // 清空原有容器，添加 TabControl
             panelContainer.Controls.Clear();
@@ -41,10 +45,11 @@ namespace BHVEditor
                 if (openFileDialog1.ShowDialog() != DialogResult.OK) return;
                 try
                 {
-                    currentFile = BHVFile.Load(openFileDialog1.FileName);
+                    
                     stateEditor.LoadBHVFile(openFileDialog1.FileName);
                     // 传递 StructB 列表给编辑控件
-                    structBEditor.LoadStructBs(new BindingList<StructB>(currentFile.StructBs));
+                    structBEditor.LoadStructBs(new BindingList<StructB>(stateEditor.CurrentFile.StructBs));
+                    structCEditor.LoadStructCs(stateEditor.CurrentFile.StructCs);
                 }
                 catch (Exception ex)
                 {
@@ -54,7 +59,7 @@ namespace BHVEditor
 
             btnExportJSON.Click += (s, e) =>
             {
-                if (currentFile == null)
+                if (stateEditor.CurrentFile == null)
                 {
                     MessageBox.Show("请先加载一个 BHV 文件。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     return;
@@ -80,10 +85,12 @@ namespace BHVEditor
                 try
                 {
                     // JSON 导入替换整个模型
-                    currentFile = JsonConvert.DeserializeObject<BHVFile>(File.ReadAllText(dlg.FileName, Encoding.UTF8));
+                    /*currentFile = JsonConvert.DeserializeObject<BHVFile>(File.ReadAllText(dlg.FileName, Encoding.UTF8));*/
                     stateEditor.ImportJSON(dlg.FileName);
                     // 更新 StructB 编辑器
-                    structBEditor.LoadStructBs(new BindingList<StructB>(currentFile.StructBs));
+                    structBEditor.LoadStructBs(new BindingList<StructB>(stateEditor.CurrentFile.StructBs));
+                    // 更新 StructC 编辑器
+                    structCEditor.LoadStructCs(stateEditor.CurrentFile.StructCs);
                     MessageBox.Show("JSON 导入完成。", "完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
                 catch (Exception ex)
@@ -94,7 +101,7 @@ namespace BHVEditor
 
             btnSaveBHV.Click += (s, e) =>
             {
-                if (currentFile == null)
+                if (stateEditor.CurrentFile == null)
                 {
                     MessageBox.Show("请先加载或导入数据。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     return;
@@ -103,9 +110,9 @@ namespace BHVEditor
                 if (dlg.ShowDialog() != DialogResult.OK) return;
                 try
                 {
-                    // 保存前，确保 StructB 编辑同步到 currentFile
-                    // BindingList 已自动同步原始列表
-                    currentFile.Save(dlg.FileName);
+                    // 保存前，确保 StructB 和 StructC 编辑同步到 currentFile
+                    // BindingList 已自动双向同步
+                    stateEditor.CurrentFile.Save(dlg.FileName);
                     MessageBox.Show("保存 BHV 成功。", "完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
                 catch (Exception ex)
@@ -113,6 +120,8 @@ namespace BHVEditor
                     MessageBox.Show($"保存失败：{ex.Message}", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
             };
+
         }
+
     }
 }

@@ -117,7 +117,7 @@ namespace BHVEditor
                     st.Unk60 = br.ReadInt32();
                     st.StructBsid2 = br.ReadInt16();
                     st.UnkBsControlId = br.ReadInt16();
-                    st.Unk68 = br.ReadInt32();
+                    st.WeaponAnimationCallingId = br.ReadInt32();
                     st.Unk6C = br.ReadInt32();
                     st.BladeHomingControl = br.ReadInt32();
                     st.Unk74 = br.ReadInt32();
@@ -135,6 +135,32 @@ namespace BHVEditor
                         st.Unk9C = br.ReadInt32();
                     }
                     States.Add(st);
+                }
+            }
+            // —— 新增：按 State.Offset04 解析“蓄力”原始数据区，和 Condition Data 类似 —— 
+            if (States.Count > 0)
+            {
+                // 按偏移升序
+                var sorted = States.OrderBy(st => st.Offset04).ToList();
+                // transitions 一开始就排在 raw 数据区后面，取最小的 transitionsOffset 作为 raw 区结束
+                int endOffset = sorted.Min(st => st.TransitionsOffset);
+                for (int i = 0; i < sorted.Count; i++)
+                {
+                    var st = sorted[i];
+                    int startRel = st.Offset04;
+                    int nextRel = (i < sorted.Count - 1)
+                        ? sorted[i + 1].Offset04
+                        : endOffset;
+                    int length = nextRel - startRel;
+                    if (length > 0)
+                    {
+                        br.BaseStream.Seek(DATA_START + startRel, SeekOrigin.Begin);
+                        st.Data = br.ReadBytes(length).ToList();
+                    }
+                    else
+                    {
+                        st.Data = new List<byte>();
+                    }
                 }
             }
 
@@ -528,7 +554,7 @@ namespace BHVEditor
                 }
                 else
                 {
-                    st.Offset04 = -1; // mark to set later
+                    st.Offset04 = (int)dataPointerRel; // mark to set later
                 }
             }
             long transitionsStartRel = Header.StatesOffset + Header.StateCount * stateEntrySize + (int)(dataPointerRel - (Header.StatesOffset + Header.StateCount * stateEntrySize));
@@ -675,7 +701,7 @@ namespace BHVEditor
                 bw.Write(st.Unk60);
                 bw.Write(st.StructBsid2);
                 bw.Write(st.UnkBsControlId);
-                bw.Write(st.Unk68);
+                bw.Write(st.WeaponAnimationCallingId);
                 bw.Write(st.Unk6C);
                 bw.Write(st.BladeHomingControl);
                 bw.Write(st.Unk74);
@@ -1115,7 +1141,7 @@ namespace BHVEditor
         public int Unk60 { get; set; }
         public short StructBsid2 { get; set; }
         public short UnkBsControlId { get; set; }
-        public int Unk68 { get; set; }
+        public int WeaponAnimationCallingId { get; set; }
         public int Unk6C { get; set; }
         public int BladeHomingControl { get; set; }
         public int Unk74 { get; set; }

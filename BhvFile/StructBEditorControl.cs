@@ -1,121 +1,133 @@
 ﻿using System;
 using System.ComponentModel;
+using System.Linq;
 using System.Reflection;
 using System.Windows.Forms;
 
 namespace BHVEditor
 {
-    public partial class StructBEditorControl : UserControl
+    /// <summary>
+    /// StructB 编辑器控件：显示、增删改 StructB 列表，并自动维护序号列。
+    /// </summary>
+    public class StructBEditorControl : UserControl
     {
-        private BindingList<StructB> structBs;
-
-        // 当 StructB 列表发生变化时触发，便于外部刷新显示
-        public event EventHandler StructBsChanged;
+        private DataGridView dataGridView;
+        private Panel toolPanel;
+        private Button btnAdd;
+        private Button btnDelete;
+        private BindingList<StructB> bindingList;
 
         public StructBEditorControl()
         {
-            InitializeComponent();
-            // 监听属性修改事件，以便刷新
-            pgStructB.PropertyValueChanged += PgStructB_PropertyValueChanged;
+            InitializeComponents();
         }
 
+        private void InitializeComponents()
+        {
+            // 工具栏
+            toolPanel = new Panel { Dock = DockStyle.Top, Height = 30 };
+            btnAdd = new Button { Text = "添加", Dock = DockStyle.Left, Width = 60 };
+            btnDelete = new Button { Text = "删除", Dock = DockStyle.Left, Width = 60 };
+            toolPanel.Controls.AddRange(new Control[] { btnAdd, btnDelete });
+
+            // DataGridView
+            dataGridView = new DataGridView
+            {
+                Dock = DockStyle.Fill,
+                AutoGenerateColumns = false,
+                AllowUserToAddRows = false,
+                RowHeadersVisible = false,
+            };
+
+            // 添加序号列
+            var indexCol = new DataGridViewTextBoxColumn
+            {
+                Name = "Index",
+                HeaderText = "序号",
+                ReadOnly = true,
+                Width = 50,
+            };
+            dataGridView.Columns.Add(indexCol);
+
+            // 使用反射为 StructB 的每个属性添加列
+            var props = typeof(StructB)
+                .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                .OrderBy(p => p.Name);
+            foreach (var prop in props)
+            {
+                var col = new DataGridViewTextBoxColumn
+                {
+                    DataPropertyName = prop.Name,
+                    Name = prop.Name,
+                    HeaderText = prop.Name,
+                    ReadOnly = false,
+                    AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells,
+                };
+                dataGridView.Columns.Add(col);
+            }
+
+            // 添加到控件
+            this.Controls.Add(dataGridView);
+            this.Controls.Add(toolPanel);
+
+            // 事件连接
+            btnAdd.Click += BtnAdd_Click;
+            btnDelete.Click += BtnDelete_Click;
+        }
+
+        /// <summary>
+        /// 加载 BindingList<StructB> 并绑定到表格
+        /// </summary>
         public void LoadStructBs(BindingList<StructB> list)
         {
-            structBs = list;
-            lstStructB.DataSource = structBs;
-            lstStructB.DisplayMember = "Unk00"; // 显示第一个字段
+            bindingList = list;
+            dataGridView.DataSource = bindingList;
+            // 每次数据更新后刷新序号
+            bindingList.ListChanged += (s, e) => RefreshIndexColumn();
+            dataGridView.DataBindingComplete += (s, e) => RefreshIndexColumn();
+            RefreshIndexColumn();
         }
 
-        private void btnAdd_Click(object sender, EventArgs e)
+        /// <summary>
+        /// 刷新序号列
+        /// </summary>
+        private void RefreshIndexColumn()
         {
-            StructB sb;
-            if (lstStructB.SelectedItem is StructB prev)
+            for (int i = 0; i < dataGridView.Rows.Count; i++)
             {
-                // 克隆前一行的所有字段
-                sb = (StructB)prev.GetType()
-                    .GetMethod("MemberwiseClone", BindingFlags.Instance | BindingFlags.NonPublic)
-                    .Invoke(prev, null);
+                dataGridView.Rows[i].Cells["Index"].Value = i;
+            }
+        }
+
+        private void BtnAdd_Click(object sender, EventArgs e)
+        {
+            StructB newItem;
+            if (bindingList != null && bindingList.Count > 0)
+            {
+                // 复制上一行属性
+                var last = bindingList[bindingList.Count - 1];
+                newItem = new StructB();
+                foreach (var prop in typeof(StructB).GetProperties(BindingFlags.Public | BindingFlags.Instance))
+                {
+                    var val = prop.GetValue(last);
+                    prop.SetValue(newItem, val);
+                }
             }
             else
             {
-                sb = new StructB();
+                newItem = new StructB();
             }
-            structBs.Add(sb);
-            lstStructB.SelectedItem = sb;
-            OnStructBsChanged();
+            bindingList?.Add(newItem);
         }
 
-        private void btnRemove_Click(object sender, EventArgs e)
+        private void BtnDelete_Click(object sender, EventArgs e)
         {
-            if (lstStructB.SelectedItem is StructB sb)
+            if (bindingList == null) return;
+            var row = dataGridView.CurrentRow;
+            if (row != null && row.Index < bindingList.Count)
             {
-                structBs.Remove(sb);
-                OnStructBsChanged();
+                bindingList.RemoveAt(row.Index);
             }
-        }
-
-        private void lstStructB_SelectedIndexChanged(object sender, EventArgs e)
-        {
-            pgStructB.SelectedObject = lstStructB.SelectedItem;
-        }
-
-        private void PgStructB_PropertyValueChanged(object s, PropertyValueChangedEventArgs e)
-        {
-            OnStructBsChanged();
-        }
-
-        protected virtual void OnStructBsChanged()
-        {
-            StructBsChanged?.Invoke(this, EventArgs.Empty);
-        }
-    }
-
-    partial class StructBEditorControl
-    {
-        private ListBox lstStructB;
-        private PropertyGrid pgStructB;
-        private Button btnAdd;
-        private Button btnRemove;
-
-        private void InitializeComponent()
-        {
-            this.lstStructB = new System.Windows.Forms.ListBox();
-            this.pgStructB = new System.Windows.Forms.PropertyGrid();
-            this.btnAdd = new System.Windows.Forms.Button();
-            this.btnRemove = new System.Windows.Forms.Button();
-            this.SuspendLayout();
-            // 
-            // lstStructB
-            // 
-            this.lstStructB.Dock = System.Windows.Forms.DockStyle.Left;
-            this.lstStructB.Width = 150;
-            this.lstStructB.SelectedIndexChanged += new System.EventHandler(this.lstStructB_SelectedIndexChanged);
-            // 
-            // pgStructB
-            // 
-            this.pgStructB.Dock = System.Windows.Forms.DockStyle.Fill;
-            // 
-            // btnAdd
-            // 
-            this.btnAdd.Text = "添加";
-            this.btnAdd.Dock = System.Windows.Forms.DockStyle.Bottom;
-            this.btnAdd.Height = 30;
-            this.btnAdd.Click += new System.EventHandler(this.btnAdd_Click);
-            // 
-            // btnRemove
-            // 
-            this.btnRemove.Text = "删除";
-            this.btnRemove.Dock = System.Windows.Forms.DockStyle.Bottom;
-            this.btnRemove.Height = 30;
-            this.btnRemove.Click += new System.EventHandler(this.btnRemove_Click);
-            // 
-            // StructBEditorControl
-            // 
-            this.Controls.Add(this.pgStructB);
-            this.Controls.Add(this.lstStructB);
-            this.Controls.Add(this.btnRemove);
-            this.Controls.Add(this.btnAdd);
-            this.ResumeLayout(false);
         }
     }
 }

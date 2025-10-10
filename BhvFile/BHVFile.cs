@@ -1,10 +1,10 @@
-﻿using System;
+﻿using Newtonsoft.Json;
+using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Text;
-using Newtonsoft.Json;
-using System.ComponentModel;
 namespace BHVEditor
 {
     public class BHVFile
@@ -36,6 +36,7 @@ namespace BHVEditor
         {
             using (BinaryWriter bw = new BinaryWriter(File.Create(path)))
             {
+                if (Header?.MysteryBlock?.Length == 0xE0) fileType = BHVType.BASENORMAL;
                 Write(bw);
             }
         }
@@ -70,14 +71,18 @@ namespace BHVEditor
             Header.CountD = br.ReadInt32();
 
             // Mystery block
-            int mysterySize = 0;
-            if (fileType == BHVType.BASENORMAL) mysterySize = 0xE0;
-            else if (fileType == BHVType.W) mysterySize = 0x40;
-            else if (fileType == BHVType.WEAPON) mysterySize = 0;
-            if (mysterySize > 0)
-            {
-                Header.MysteryBlock = br.ReadBytes(mysterySize);
-            }
+            long posAfterHeader = br.BaseStream.Position;              // 刚读完 Header 的位置
+            long expectedStatesAbs = DATA_START + Header.StatesOffset;    // 状态段绝对起点
+            int mysterySize = (int)(expectedStatesAbs - posAfterHeader);
+            if (mysterySize < 0)
+                throw new InvalidDataException($"StatesOffset < current pos: 0x{Header.StatesOffset:X} < 0x{posAfterHeader:X}");
+
+            Header.MysteryBlock = (mysterySize > 0) ? br.ReadBytes(mysterySize) : Array.Empty<byte>();
+
+            // 给后续写入一个提示（不影响读取逻辑）
+            if (mysterySize >= 0xE0) fileType = BHVType.BASENORMAL;
+            else if (mysterySize >= 0x40) fileType = BHVType.W;
+            else fileType = BHVType.WEAPON; 
 
             // States
             States = new List<State>();
@@ -114,7 +119,8 @@ namespace BHVEditor
                     st.Unk54 = br.ReadInt32();
                     st.Unk58 = br.ReadInt32();
                     st.Unk5C = br.ReadInt32();
-                    st.Unk60 = br.ReadInt32();
+                    var rawUnk60 = br.ReadInt32();
+                    st.LeftHandAnimationId = rawUnk60 >> 16;
                     st.StructBsid2 = br.ReadInt16();
                     st.UnkBsControlId = br.ReadInt16();
                     st.WeaponAnimationCallingId = br.ReadInt32();
@@ -281,7 +287,7 @@ namespace BHVEditor
 
             // Prepare transitions and conditions parsing
             foreach (var st in States) st.Transitions = new List<Transition>();
-            
+
 
             foreach (var st in States)
             {
@@ -437,28 +443,51 @@ namespace BHVEditor
             if (fileType == BHVType.BASENORMAL)
             {
                 Strings = new List<string>();
+
+                // A) 先走到 D 段“真实尾部”：D 数组 + 全部 DA 子表
                 long stringsStart = DATA_START + Header.OffsetD;
-                if (Header.CountD == 0) stringsStart = DATA_START + Header.OffsetD;
+                if (Header.CountD > 0)
+                {
+                    long afterDArray = stringsStart + Header.CountD * 32;
+                    int daSize = (Header.Version >= 10) ? 48 : 32;
+                    long afterAllDA = afterDArray;
+                    foreach (var sd in StructDs)
+                    {
+                        if (sd.Count04 > 0) afterAllDA += sd.Count04 * daSize;
+                    }
+                    stringsStart = afterAllDA;
+                }
+
+                // B) 读取：数量(int16) + 偏移表(uint16[]) + 内容
                 if (stringsStart < br.BaseStream.Length)
                 {
                     br.BaseStream.Seek(stringsStart, SeekOrigin.Begin);
+
                     short strCount = br.ReadInt16();
                     if (strCount < 0) strCount = 0;
-                    short[] offsets = new short[strCount];
-                    for (int i = 0; i < strCount; i++) offsets[i] = br.ReadInt16();
+
+                    // 偏移必须按无符号读取，避免 >32767 被当负数
+                    ushort[] offsets = new ushort[strCount];
+                    for (int i = 0; i < strCount; i++)
+                        offsets[i] = br.ReadUInt16();
+
                     long strContentStart = br.BaseStream.Position;
+
                     for (int i = 0; i < strCount; i++)
                     {
                         long pos = strContentStart + offsets[i];
+                        if (pos < 0) pos = 0;
+                        if (pos >= br.BaseStream.Length) break;
+
                         br.BaseStream.Seek(pos, SeekOrigin.Begin);
                         List<byte> buf = new List<byte>();
                         byte ch;
-                        while ((ch = br.ReadByte()) != 0)
+                        while (br.BaseStream.Position < br.BaseStream.Length &&
+                               (ch = br.ReadByte()) != 0)
                         {
                             buf.Add(ch);
                         }
-                        string s = Encoding.UTF8.GetString(buf.ToArray());
-                        Strings.Add(s);
+                        Strings.Add(Encoding.UTF8.GetString(buf.ToArray()));
                     }
                 }
             }
@@ -466,29 +495,29 @@ namespace BHVEditor
 
         private void Write(BinaryWriter bw)
         {
-                        // 1) 先遍历一遍所有 Transition，确保 StructAbb.Type 和 Unk01 对应一致
+            // 1) 先遍历一遍所有 Transition，确保 StructAbb.Type 和 Unk01 对应一致
             foreach (var st in States)
-                            {
-                                foreach (var tr in st.Transitions)
-                                    {
-                                        if (tr.StructAbb == null)
-                       tr.StructAbb = new StructABB();
-                                        // 根据 Unk01 强制设置 Type
-                                        switch (tr.StructAbb.Unk01)
-                                        {
+            {
+                foreach (var tr in st.Transitions)
+                {
+                    if (tr.StructAbb == null)
+                        tr.StructAbb = new StructABB();
+                    // 根据 Unk01 强制设置 Type
+                    switch (tr.StructAbb.Unk01)
+                    {
                         case 1:
-                        tr.StructAbb.Type = 1; break;
-                                                case 3:
-                        tr.StructAbb.Type = 3; break;
-                                                case 4:
-                        tr.StructAbb.Type = 4; break;
+                            tr.StructAbb.Type = 1; break;
+                        case 3:
+                            tr.StructAbb.Type = 3; break;
+                        case 4:
+                            tr.StructAbb.Type = 4; break;
                         default: tr.StructAbb.Type = 0; break;
-                                            }
-                                        // 如果是类型1，也要保证 Unk01=1
-                                        if (tr.StructAbb.Type == 1)
+                    }
+                    // 如果是类型1，也要保证 Unk01=1
+                    if (tr.StructAbb.Type == 1)
                         tr.StructAbb.Unk01 = 1;
-                                    }
-                            }
+                }
+            }
             // Recalculate dynamic header fields
             Header.StateCount = (States != null ? States.Count : 0);
             Header.CountB = (StructBs != null ? StructBs.Count : 0);
@@ -523,109 +552,107 @@ namespace BHVEditor
             bw.Write(0); // offsetD
             bw.Write(Header.CountD);
 
-            // 写版本依赖的 mystery block
-            if (fileType == BHVType.BASENORMAL)
-            {
-                var mb = Header.MysteryBlock ?? new byte[0xE0];
-                if (mb.Length != 0xE0) Array.Resize(ref mb, 0xE0);
-                bw.Write(mb);
-            }
-            else if (fileType == BHVType.W)
-            {
-                var mb = Header.MysteryBlock ?? new byte[0x40];
-                if (mb.Length != 0x40) Array.Resize(ref mb, 0x40);
-                bw.Write(mb);
-            }
+            // 写 Mystery Block —— 直接写 Header.MysteryBlock 的实际长度
+            var mb = Header.MysteryBlock ?? Array.Empty<byte>();
+
+            bw.Write(mb);
             // if WEAPON, no mystery to write
 
             // Calculate offsets for states and transitions
+            // 统一：states 区内的每个指针、偏移，都是 **相对 DATA_START** 的相对地址。
             long statesStartPos = bw.BaseStream.Position;
             Header.StatesOffset = (int)(statesStartPos - DATA_START);
+
             int stateEntrySize = (Header.Version >= 10 ? 0xA0 : 0x80);
-            // Allocate state data blocks
-            bool anyStateData = States.Any(s => s.Data != null && s.Data.Count > 0);
+
+            // ---------- 1) 先算 State 自己的数据区（st.Data） ----------
             long dataPointerRel = Header.StatesOffset + Header.StateCount * stateEntrySize;
             foreach (var st in States)
             {
                 if (st.Data != null && st.Data.Count > 0)
                 {
                     st.Offset04 = (int)dataPointerRel;
-                    dataPointerRel += st.Data.Count;
+                    dataPointerRel += st.Data.Count; // 这里按原样追加字节数
                 }
                 else
                 {
-                    st.Offset04 = (int)dataPointerRel; // mark to set later
+                    st.Offset04 = -1; // 先标记，稍后统一安放（如果你有需要的话）
                 }
             }
-            long transitionsStartRel = Header.StatesOffset + Header.StateCount * stateEntrySize + (int)(dataPointerRel - (Header.StatesOffset + Header.StateCount * stateEntrySize));
-            // transitionsStartRel = Header.StatesOffset + state definitions length + totalStateDataLength
+            // 如果需要把没有 Data 的 state 指到一个“空区”的话，可以在这里统一落位
             foreach (var st in States)
             {
-                if (st.Offset04 == -1)
-                {
-                    st.Offset04 = (int)transitionsStartRel;
-                }
+                if (st.Offset04 == -1) st.Offset04 = (int)dataPointerRel;
             }
-            long transitionsPointerRel = transitionsStartRel;
+
+            // ---------- 2) transitions 表区（每条 32 字节） ----------
+            long transitionsStartRel = dataPointerRel;
             foreach (var st in States)
             {
-                if (st.Transitions == null) st.Transitions = new List<Transition>();
-                st.TransitionCount = st.Transitions.Count;
+                st.TransitionCount = (st.Transitions?.Count) ?? 0;
                 if (st.TransitionCount > 0)
-                {
-                    st.TransitionsOffset = (int)transitionsPointerRel;
-                    transitionsPointerRel += st.TransitionCount * 32;
-                }
+                    st.TransitionsOffset = (int)transitionsStartRel;
                 else
-                {
-                    st.TransitionsOffset = (int)transitionsPointerRel;
-                }
+                    st.TransitionsOffset = 0;
+
+                transitionsStartRel += st.TransitionCount * 32;
             }
-            long structAbbStartRel = transitionsPointerRel;
+            long transitionsEndRel = transitionsStartRel;
+
+            // ---------- 3) StructABB 内容区（对齐到 32 的块） ----------
+            long structAbbStartRel = transitionsEndRel;
             long structAbbPointerRel = structAbbStartRel;
+
             foreach (var st in States)
             {
+                if (st.Transitions == null) continue;
                 foreach (var tr in st.Transitions)
                 {
-                    tr.Offset0C = (int)structAbbPointerRel;
-                    // determine size and pad
-                    int abbSize;
-                    if (tr.StructAbb == null)
+                    // 确保每条 Transition 至少有个 StructAbb 对象
+                    tr.StructAbb ??= new StructABB();
+
+                    // 写之前做一次 “Unk01 -> Type” 的统一
+                    switch (tr.StructAbb.Unk01)
                     {
-                        abbSize = 0;
+                        case 1: tr.StructAbb.Type = 1; break;
+                        case 3: tr.StructAbb.Type = 3; break;
+                        case 4: tr.StructAbb.Type = 4; break;
+                        default: tr.StructAbb.Type = 0; break;
                     }
-                    else if (tr.StructAbb.Type == 1)
+
+                    // 计算该 ABB 的“内容长度”与对齐后的块大小（与实际写入保持一致！）
+                    int contentSize = tr.StructAbb.Type switch
                     {
-                        abbSize = 0x1C; // 28 bytes
-                    }
-                    else if (tr.StructAbb.Type == 3)
-                    {
-                        abbSize = 0x20; // 32 bytes
-                    }
-                    else if (tr.StructAbb.Type == 4)
-                    {
-                        abbSize = 0x34; // 52 bytes
-                    }
-                    else
-                    {
-                        // fallback
-                        abbSize = 0x20;
-                    }
-                    int alloc = ((abbSize + 31) / 32) * 32;
-                    structAbbPointerRel += alloc;
+                        1 => 28,   // header(4) + 6*4
+                        3 => 32,   // header(4) + 7*4
+                        4 => 52,   // ✅ header(4) + 12*4  (注意：不是 56)
+                        _ => 4     // 仅头部
+                    };
+                    int allocSize = ((contentSize + 31) / 32) * 32;
+
+                    tr.Offset0C = (int)structAbbPointerRel; // ABB 指针（相对 DATA_START）
+                    structAbbPointerRel += allocSize;
                 }
             }
-            long conditionsStartRel = structAbbPointerRel;
+            long structAbbEndRel = structAbbPointerRel;
+
+            // ---------- 4) Conditions 结构头区（每条 16 字节），接在 ABB 后 ----------
+            long conditionsStartRel = structAbbEndRel;
             long conditionsPointerRel = conditionsStartRel;
+
             foreach (var st in States)
             {
+                if (st.Transitions == null) continue;
                 foreach (var tr in st.Transitions)
                 {
+                    // 确保列表不为 null；不要把已有的条件“抹成 0”
                     if (tr.Conditions == null) tr.Conditions = new List<Condition>();
+
+                    // 只有真正有条件时才分配非 0 偏移
                     tr.ConditionCount = tr.Conditions.Count;
                     if (tr.ConditionCount > 0)
                     {
-                        tr.ConditionsOffset = (int)conditionsPointerRel;
+                        tr.ConditionsOffset = (int)conditionsPointerRel; // 相对 DATA_START
                         conditionsPointerRel += tr.ConditionCount * 16;
                     }
                     else
@@ -634,8 +661,8 @@ namespace BHVEditor
                     }
                 }
             }
-            long condDataStartRel = conditionsPointerRel;
-            long condDataPointerRel = condDataStartRel;
+            long conditionsEndRel = conditionsPointerRel;
+
             foreach (var st in States)
             {
                 foreach (var tr in st.Transitions)
@@ -643,16 +670,16 @@ namespace BHVEditor
                     foreach (var cond in tr.Conditions)
                     {
                         int dataLen = (cond.Data != null ? cond.Data.Count : 0);
-                        cond.DataOffset = (int)condDataPointerRel;
+                        cond.DataOffset = (int)conditionsEndRel;
                         if (dataLen > 0)
                         {
-                            condDataPointerRel += dataLen;
+                            conditionsEndRel += dataLen;
                         }
                         // if dataLen=0, we do not advance pointer (no data to store)
                     }
                 }
             }
-            Header.OffsetB = (int)condDataPointerRel;
+            Header.OffsetB = (int)conditionsEndRel;
             Header.OffsetC = Header.OffsetB + Header.CountB * (Header.Version >= 10 ? 0x60 : (Header.Version == 6 ? 0x50 : 0x40));
             // If no StructC entries, we keep offsetC as computed end-of-B, which is fine.
             if (Header.CountD > 0)
@@ -698,7 +725,7 @@ namespace BHVEditor
                 bw.Write(st.Unk54);
                 bw.Write(st.Unk58);
                 bw.Write(st.Unk5C);
-                bw.Write(st.Unk60);
+                bw.Write(st.LeftHandAnimationId << 16);
                 bw.Write(st.StructBsid2);
                 bw.Write(st.UnkBsControlId);
                 bw.Write(st.WeaponAnimationCallingId);
@@ -730,12 +757,13 @@ namespace BHVEditor
             // Write Transitions
             foreach (var st in States)
             {
+                if (st.Transitions == null) continue;
                 foreach (var tr in st.Transitions)
                 {
                     bw.Write(tr.StateIndex);
-                    bw.Write(tr.ConditionsOffset);
+                    bw.Write(tr.ConditionsOffset); // ✅ 这里已经是非 0（若有条件）
                     bw.Write(tr.ConditionCount);
-                    bw.Write(tr.Offset0C);
+                    bw.Write(tr.Offset0C);         // StructABB 偏移
                     bw.Write(tr.Unk10);
                     bw.Write(tr.Unk14);
                     bw.Write(tr.Unk18);
@@ -746,28 +774,26 @@ namespace BHVEditor
             // —— 写入 StructABB 数据区，确保对齐 ——  
             foreach (var st in States)
             {
+                if (st.Transitions == null) continue;
                 foreach (var tr in st.Transitions)
                 {
                     var abb = tr.StructAbb ?? new StructABB();
-                    // 1) 确定 “内容长度”  
                     int contentSize = abb.Type switch
                     {
-                        1 => 28,    // 标准浮点版，28 字节数据  
-                        3 => 32,    // 整型版，32 字节数据  
-                        4 => 56,    // 带额外字段版，56 字节数据  
-                        _ => 4      // 默认只写头部 4 字节  
+                        1 => 28,
+                        3 => 32,
+                        4 => 52,  // ✅ 与上面保持一致
+                        _ => 4
                     };
-                    // 2) 计算整块长度（32 的倍数）  
                     int allocSize = ((contentSize + 31) / 32) * 32;
 
-                    // 3) 写入内容  
-                    // 3.1 先写四字节头（Unk00~Unk03）  
+                    // 3.1 头 4 字节
                     bw.Write(abb.Unk00);
                     bw.Write(abb.Unk01);
                     bw.Write(abb.Unk02);
                     bw.Write(abb.Unk03);
 
-                    // 3.2 根据类型写入剩余字段  
+                    // 3.2 按类型写剩余字段（与你现有代码一致）
                     if (abb.Type == 1)
                     {
                         bw.Write(abb.BehaviorMatrixParam_f);
@@ -803,16 +829,16 @@ namespace BHVEditor
                         bw.Write(abb.Unk30_int);
                     }
 
-                    // 4) 补零到 allocSize  
+                    // 3.3 补齐到 allocSize
                     int padBytes = allocSize - contentSize;
-                    for (int i = 0; i < padBytes; i++)
-                        bw.Write((byte)0);
+                    for (int i = 0; i < padBytes; i++) bw.Write((byte)0);
                 }
             }
 
             // Write Condition structures
             foreach (var st in States)
             {
+                if (st.Transitions == null) continue;
                 foreach (var tr in st.Transitions)
                 {
                     foreach (var cond in tr.Conditions)
@@ -821,7 +847,7 @@ namespace BHVEditor
                         bw.Write(cond.Unk01);
                         bw.Write(cond.Unk02);
                         bw.Write(cond.Unk03);
-                        bw.Write(cond.DataOffset);
+                        bw.Write(cond.DataOffset); // 注意：这是“条件数据区”的相对偏移（下一步会写 payload）
                         bw.Write(cond.Unk08);
                         bw.Write(cond.Unk09);
                         bw.Write(cond.Unk0A);
@@ -973,36 +999,32 @@ namespace BHVEditor
             {
                 int count = (Strings != null ? Strings.Count : 0);
                 bw.Write((short)count);
+
                 long offsetsPos = bw.BaseStream.Position;
-                // Reserve space for offsets
+                for (int i = 0; i < count; i++) bw.Write((ushort)0);  // 先预留 uint16 偏移表
+
+                List<ushort> strOffsets = new List<ushort>();
+                long contentStartPos = offsetsPos + count * 2;        // 偏移表后即内容区
+
                 for (int i = 0; i < count; i++)
                 {
-                    bw.Write((short)0);
-                }
-                List<short> strOffsets = new List<short>();
-                for (int i = 0; i < count; i++)
-                {
-                    string s = Strings[i];
-                    // record offset from start of strings content (current position - offsetsPosEnd)
                     long curPos = bw.BaseStream.Position;
-                    // Calculate offset relative to after offsets array
-                    long contentStartPos = offsetsPos + count * 2;
-                    short offsetVal = (short)(curPos - contentStartPos);
-                    strOffsets.Add(offsetVal);
-                    // write string bytes and null terminator
-                    byte[] strBytes = Encoding.UTF8.GetBytes(s);
-                    bw.Write(strBytes);
+                    long rel = curPos - contentStartPos;
+                    if (rel < 0 || rel > 0xFFFF)
+                        throw new InvalidOperationException($"String offset > 65535 at index {i}: {rel}");
+                    strOffsets.Add((ushort)rel);
+
+                    var bytes = Encoding.UTF8.GetBytes(Strings[i] ?? string.Empty);
+                    bw.Write(bytes);
                     bw.Write((byte)0);
                 }
-                // Go back and write offsets
+
                 long endPos = bw.BaseStream.Position;
                 bw.BaseStream.Seek(offsetsPos, SeekOrigin.Begin);
-                foreach (short off in strOffsets)
-                {
-                    bw.Write(off);
-                }
+                foreach (var off in strOffsets) bw.Write(off);
                 bw.BaseStream.Seek(endPos, SeekOrigin.Begin);
             }
+
 
             // Now patch header fileSize and offsets
             long fileEndPos = bw.BaseStream.Position;
@@ -1109,13 +1131,16 @@ namespace BHVEditor
         public int Index { get; set; }
         public short Unk00 { get; set; }
         public short Unk02 { get; set; }
-        [Browsable(false)][JsonIgnore]
+        [Browsable(false)]
+        [JsonIgnore]
         public int Offset04 { get; set; }
 
-        [Browsable(false)][JsonIgnore]
+        [Browsable(false)]
+        [JsonIgnore]
         public int TransitionsOffset { get; set; }
 
-        [Browsable(false)][JsonIgnore]
+        [Browsable(false)]
+        [JsonIgnore]
         public int TransitionCount { get; set; }
         public short StructBid { get; set; }
         public short Unk10 { get; set; }
@@ -1138,7 +1163,7 @@ namespace BHVEditor
         public int Unk54 { get; set; }
         public int Unk58 { get; set; }
         public int Unk5C { get; set; }
-        public int Unk60 { get; set; }
+        public int LeftHandAnimationId { get; set; }
         public short StructBsid2 { get; set; }
         public short UnkBsControlId { get; set; }
         public int WeaponAnimationCallingId { get; set; }
@@ -1164,19 +1189,22 @@ namespace BHVEditor
         public Transition()
         {
             StructAbb = new StructABB
-                        {
+            {
                 Unk01 = 1,
                 Type = 1
             };
         }
         public int StateIndex { get; set; }
-        [Browsable(false)][JsonIgnore]
+        [Browsable(false)]
+        [JsonIgnore]
         public int ConditionsOffset { get; set; }
 
-        [Browsable(false)][JsonIgnore]
+        [Browsable(false)]
+        [JsonIgnore]
         public int ConditionCount { get; set; }
 
-        [Browsable(false)][JsonIgnore]
+        [Browsable(false)]
+        [JsonIgnore]
         public int Offset0C { get; set; }
         public int Unk10 { get; set; }
         public int Unk14 { get; set; }
@@ -1192,10 +1220,12 @@ namespace BHVEditor
         public byte Unk01 { get; set; }
         public byte Unk02 { get; set; }
         public byte Unk03 { get; set; }
-        [Browsable(false)][JsonIgnore]
+        [Browsable(false)]
+        [JsonIgnore]
         public int DataOffset { get; set; }
 
-        [Browsable(false)][JsonIgnore]
+        [Browsable(false)]
+        [JsonIgnore]
         public int DataLength { get; set; }
         public byte Unk08 { get; set; }
         public byte Unk09 { get; set; }

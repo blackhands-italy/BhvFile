@@ -116,7 +116,7 @@ namespace BHVEditor
                     st.Unk48 = br.ReadSingle();
                     st.RootmotionStatus = br.ReadSingle();
                     st.Unk50 = br.ReadInt32();
-                    st.Unk54 = br.ReadInt32();
+                    st.BodyPartControl = br.ReadInt32();
                     st.Unk58 = br.ReadInt32();
                     st.Unk5C = br.ReadInt32();
                     var rawUnk60 = br.ReadInt32();
@@ -722,7 +722,7 @@ namespace BHVEditor
                 bw.Write(st.Unk48);
                 bw.Write(st.RootmotionStatus);
                 bw.Write(st.Unk50);
-                bw.Write(st.Unk54);
+                bw.Write(st.BodyPartControl);
                 bw.Write(st.Unk58);
                 bw.Write(st.Unk5C);
                 bw.Write(st.LeftHandAnimationId << 16);
@@ -1160,7 +1160,7 @@ namespace BHVEditor
         public float Unk48 { get; set; }
         public float RootmotionStatus { get; set; }
         public int Unk50 { get; set; }
-        public int Unk54 { get; set; }
+        public int BodyPartControl { get; set; }
         public int Unk58 { get; set; }
         public int Unk5C { get; set; }
         public int LeftHandAnimationId { get; set; }

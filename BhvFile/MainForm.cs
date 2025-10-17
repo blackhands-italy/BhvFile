@@ -14,6 +14,7 @@ namespace BHVEditor
         private StateEditorControl stateEditor;
         private StructBEditorControl structBEditor;
         private StructCEditorControl structCEditor;
+        private StringsEditorControl stringsEditor;
         public MainForm()
         {
             InitializeComponent();
@@ -31,9 +32,16 @@ namespace BHVEditor
             var tabPageStructC = new TabPage("StructC 编辑");
             structCEditor = new StructCEditorControl { Dock = DockStyle.Fill };
             tabPageStructC.Controls.Add(structCEditor);
+
+            // ★ 新增：Strings 编辑
+            var tabPageStrings = new TabPage("Strings 编辑");
+            stringsEditor = new StringsEditorControl { Dock = DockStyle.Fill };
+            tabPageStrings.Controls.Add(stringsEditor);
+
             tab.TabPages.Add(tabPageState);
             tab.TabPages.Add(tabPageStructB);
             tab.TabPages.Add(tabPageStructC);
+            tab.TabPages.Add(tabPageStrings);
 
             // 清空原有容器，添加 TabControl
             panelContainer.Controls.Clear();
@@ -50,6 +58,8 @@ namespace BHVEditor
                     // 传递 StructB 列表给编辑控件
                     structBEditor.LoadStructBs(new BindingList<StructB>(stateEditor.CurrentFile.StructBs));
                     structCEditor.LoadStructCs(stateEditor.CurrentFile.StructCs);
+                    // ★ 同步 Strings
+                    stringsEditor.LoadStrings(stateEditor.CurrentFile.Strings);
                 }
                 catch (Exception ex)
                 {
@@ -91,6 +101,8 @@ namespace BHVEditor
                     structBEditor.LoadStructBs(new BindingList<StructB>(stateEditor.CurrentFile.StructBs));
                     // 更新 StructC 编辑器
                     structCEditor.LoadStructCs(stateEditor.CurrentFile.StructCs);
+                    // ★ 同步 Strings
+                    stringsEditor.LoadStrings(stateEditor.CurrentFile.Strings);
                     MessageBox.Show("JSON 导入完成。", "完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
                 catch (Exception ex)

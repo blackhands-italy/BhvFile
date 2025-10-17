@@ -66,6 +66,9 @@
     <Compile Include="StateEditorControl.cs">
       <SubType>UserControl</SubType>
     </Compile>
+    <Compile Include="StringsEditorControl.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
     <Compile Include="StructBEditorControl.cs">
       <SubType>UserControl</SubType>
     </Compile>

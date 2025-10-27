@@ -1242,6 +1242,7 @@ namespace BHVEditor
         [Browsable(true)]
         [DisplayName("Data Ints")]
         [Description("逗号分隔的整数，每个整数写为4字节 (Little-Endian)")]
+        [JsonIgnore] // ★ 新增：避免 JSON 反序列化时覆盖 Data
         public string DataInts
         {
             get
@@ -1274,6 +1275,140 @@ namespace BHVEditor
                     }
                 }
                 Data = list;
+                DataLength = Data.Count;
+            }
+        }
+        // BHVFile.cs - class Condition 内
+        [Browsable(true)]
+        [DisplayName("Data Floats")]
+        [Description("逗号分隔 float，每个 float 写为4字节 (Little-Endian)")]
+        [JsonIgnore] // ★ 只用于 UI，不写入 JSON
+        public string DataFloats
+        {
+            get
+            {
+                if (Data == null || Data.Count == 0) return string.Empty;
+                var vals = new List<float>();
+                for (int i = 0; i + 4 <= Data.Count; i += 4)
+                    vals.Add(BitConverter.ToSingle(Data.Skip(i).Take(4).ToArray(), 0));
+                return string.Join(",", vals.Select(v => v.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+            }
+            set
+            {
+                var list = new List<byte>();
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    var parts = value.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+                    foreach (var part in parts)
+                    {
+                        if (float.TryParse(part.Trim(), System.Globalization.NumberStyles.Float,
+                                           System.Globalization.CultureInfo.InvariantCulture, out var f))
+                            list.AddRange(BitConverter.GetBytes(f));
+                        else
+                            list.AddRange(BitConverter.GetBytes(0f));
+                    }
+                }
+                Data = list;
+                DataLength = Data.Count;
+            }
+        }
+        // BHVFile.cs - class Condition 内
+
+        public enum FieldKind { I32, U32, F32 }
+
+        private static readonly Dictionary<int, FieldKind[]> ConditionSchemas =
+            new Dictionary<int, FieldKind[]>
+        {
+    // ★ 已知：Id=1 有两个 float（第三、第四个 4 字节）
+    // 这里示例用：I32, I32, F32, F32, I32, U32   共6段(24字节)
+    { 1, new [] { FieldKind.I32, FieldKind.I32, FieldKind.F32, FieldKind.F32, FieldKind.I32, FieldKind.U32 } },
+
+                // 后续你确认了其它条件的字段布局，就按同样方式加
+                // { 43, new [] { FieldKind.I32, FieldKind.F32, FieldKind.I32 } },
+        };
+
+        // 小工具：把 Data 拆成 4 字节块
+        private IEnumerable<byte[]> EnumerateWords()
+        {
+            for (int i = 0; i + 4 <= (Data?.Count ?? 0); i += 4)
+                yield return Data.Skip(i).Take(4).ToArray();
+        }
+
+        [Browsable(true)]
+        [DisplayName("Data (Typed by Schema)")]
+        [Description("按 schema 显示/编辑。格式例如：i:153,i:0,f:-1.0,f:-1.0,i:2,u:16777215")]
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)] // 只有你显式写入时才进 JSON
+        public string DataTyped
+        {
+            get
+            {
+                if (Data == null || Data.Count == 0) return string.Empty;
+                if (!ConditionSchemas.TryGetValue(Id, out var schema))
+                    return string.Empty; // 未知 Id 不输出，避免误导
+
+                var words = EnumerateWords().ToList();
+                int n = Math.Min(schema.Length, words.Count);
+
+                var parts = new List<string>(n);
+                for (int i = 0; i < n; i++)
+                {
+                    var w = words[i];
+                    switch (schema[i])
+                    {
+                        case FieldKind.F32:
+                            parts.Add("f:" + BitConverter.ToSingle(w, 0).ToString(System.Globalization.CultureInfo.InvariantCulture));
+                            break;
+                        case FieldKind.U32:
+                            parts.Add("u:" + BitConverter.ToUInt32(w, 0));
+                            break;
+                        default:
+                            parts.Add("i:" + BitConverter.ToInt32(w, 0));
+                            break;
+                    }
+                }
+                return string.Join(",", parts);
+            }
+            set
+            {
+                if (string.IsNullOrWhiteSpace(value)) return;
+                if (!ConditionSchemas.TryGetValue(Id, out var schema)) return;
+
+                var parts = value.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+                int n = Math.Min(schema.Length, parts.Length);
+
+                var buf = new List<byte>(n * 4);
+                for (int i = 0; i < n; i++)
+                {
+                    var p = parts[i].Trim();
+                    // 允许 "i:123" / "u:456" / "f:-1.0"；也允许省略前缀按 schema 推断
+                    char prefix = (p.Length > 1 && p[1] == ':') ? char.ToLowerInvariant(p[0]) : '\0';
+                    string num = (prefix == '\0') ? p : p.Substring(2).Trim();
+
+                    var kind = schema[i];
+                    if (prefix == 'i') kind = FieldKind.I32;
+                    else if (prefix == 'u') kind = FieldKind.U32;
+                    else if (prefix == 'f') kind = FieldKind.F32;
+
+                    switch (kind)
+                    {
+                        case FieldKind.F32:
+                            if (!float.TryParse(num, System.Globalization.NumberStyles.Float,
+                                System.Globalization.CultureInfo.InvariantCulture, out var f))
+                                f = 0f;
+                            buf.AddRange(BitConverter.GetBytes(f));
+                            break;
+                        case FieldKind.U32:
+                            if (!uint.TryParse(num, out var u)) u = 0u;
+                            buf.AddRange(BitConverter.GetBytes(u));
+                            break;
+                        default:
+                            if (!int.TryParse(num, out var i32)) i32 = 0;
+                            buf.AddRange(BitConverter.GetBytes(i32));
+                            break;
+                    }
+                }
+
+                Data = buf;
                 DataLength = Data.Count;
             }
         }

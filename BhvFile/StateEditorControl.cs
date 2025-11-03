@@ -17,6 +17,8 @@ namespace BHVEditor
         private BHVFile originalFile;
         private List<Node> nodes = new List<Node>();
         private List<BHVFile> history = new List<BHVFile>();
+        // ★ 新增：用于复制粘贴 Transition 的静态剪贴板
+        private static List<Transition> transitionClipboard = new List<Transition>();
         private int historyIndex = -1;
 
         private readonly Size nodeSize = new Size(100, 60);
@@ -456,7 +458,17 @@ var states = currentFile.States.Where(st => {
                 e.Graphics.DrawLine(previewPen, srcCenter, currentMouseWorld);
             }
         }
-
+        /// <summary>
+        /// 使用 JSON 序列化/反序列化来深度复制一个 Transition 列表
+        /// (这将自动复制所有的 Conditions 和 StructAbb)
+        /// </summary>
+        private List<Transition> CloneTransitions(List<Transition> source)
+        {
+            if (source == null) return new List<Transition>();
+            // 利用您已有的 JSON 序列化功能实现深度复制
+            var json = JsonConvert.SerializeObject(source);
+            return JsonConvert.DeserializeObject<List<Transition>>(json);
+        }
         private Point GetEdgePoint(Point center, Point toward)
         {
             double halfW = nodeSize.Width / 2.0;
@@ -497,6 +509,43 @@ var states = currentFile.States.Where(st => {
                 {
                     ctxMenu.Items.Add("复制节点", null, (s2, e2) => { DuplicateNode(nd); PushHistory(); Invalidate(); });
                     ctxMenu.Items.Add("删除状态", null, (s2, e2) => { DeleteState(nd); PushHistory(); Invalidate(); });
+                    // ★★★★★ 以下是新增代码 ★★★★★
+
+                    ctxMenu.Items.Add(new ToolStripSeparator());
+
+                    // 1. 添加 "复制转换" 选项
+                    // ★ 关键: 必须先检查 null，再检查 Count
+                    if (nd.State.Transitions != null && nd.State.Transitions.Count > 0)
+                    {
+                        ctxMenu.Items.Add($"复制全部 {nd.State.Transitions.Count} 条转换", null, (s2, e2) =>
+                        {
+                            // 使用辅助方法深度复制到剪贴板
+                            transitionClipboard = CloneTransitions(nd.State.Transitions);
+                        });
+                    }
+
+                    // 2. 添加 "粘贴转换" 选项
+                    if (transitionClipboard.Count > 0)
+                    {
+                        ctxMenu.Items.Add($"粘贴 {transitionClipboard.Count} 条转换", null, (s2, e2) =>
+                        {
+                            // ★ 关键: 粘贴前，确保目标节点的转换列表不是 null
+                            if (nd.State.Transitions == null)
+                                nd.State.Transitions = new List<Transition>(); //
+
+                            // 从剪贴板粘贴“克隆” (以防用户粘贴多次)
+                            var transitionsToPaste = CloneTransitions(transitionClipboard);
+                            nd.State.Transitions.AddRange(transitionsToPaste);
+
+                            // 更新 State 中的计数字段
+                            nd.State.TransitionCount = nd.State.Transitions.Count;
+
+                            // 记录到历史并重绘
+                            PushHistory(); //
+                            Invalidate(); //
+                        });
+                    }
+                    // ★★★★★ 新增代码结束 ★★★★★
                 }
                 ctxMenu.Items.Add("编辑 Mystery Block…", null, (s, e) => ShowMysteryDialog());
 

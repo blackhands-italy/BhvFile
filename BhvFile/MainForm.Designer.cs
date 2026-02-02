@@ -70,6 +70,7 @@
             this.Controls.Add(this.panelContainer);
             this.Text = "BHV Editor";
             this.ResumeLayout(false);
+
         }
     }
 }

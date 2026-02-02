@@ -82,7 +82,7 @@ namespace BHVEditor
             // 给后续写入一个提示（不影响读取逻辑）
             if (mysterySize >= 0xE0) fileType = BHVType.BASENORMAL;
             else if (mysterySize >= 0x40) fileType = BHVType.W;
-            else fileType = BHVType.WEAPON; 
+            else fileType = BHVType.WEAPON;
 
             // States
             States = new List<State>();
@@ -94,7 +94,7 @@ namespace BHVEditor
                     State st = new State();
                     st.Index = i;
                     st.Unk00 = br.ReadInt16();
-                    st.Unk02 = br.ReadInt16();
+                    st.BoostParamSection = br.ReadInt16();
                     st.Offset04 = br.ReadInt32();
                     st.TransitionsOffset = br.ReadInt32();
                     st.TransitionCount = br.ReadInt32();
@@ -709,7 +709,7 @@ namespace BHVEditor
             foreach (var st in States)
             {
                 bw.Write(st.Unk00);
-                bw.Write(st.Unk02);
+                bw.Write(st.BoostParamSection);
                 bw.Write(st.Offset04);
                 bw.Write(st.TransitionsOffset);
                 bw.Write(st.TransitionCount);
@@ -1148,7 +1148,7 @@ namespace BHVEditor
     {
         public int Index { get; set; }
         public short Unk00 { get; set; }
-        public short Unk02 { get; set; }
+        public short BoostParamSection { get; set; }
         [Browsable(false)]
         [JsonIgnore]
         public int Offset04 { get; set; }
@@ -1209,6 +1209,9 @@ namespace BHVEditor
         public int Unk9C { get; set; }
         public List<Transition> Transitions { get; set; } = new List<Transition>();
         public List<byte> Data { get; set; } = new List<byte>();
+        // 新增：用于获取调试名称
+        [JsonIgnore, Browsable(false)]
+        public string DebugName => BhvDebugManager.GetStateName(this.Index);
     }
 
     public class Transition
@@ -1239,6 +1242,7 @@ namespace BHVEditor
         public int Unk1C { get; set; }
         public List<Condition> Conditions { get; set; } = new List<Condition>();
         public StructABB StructAbb { get; set; }
+
     }
 
     public class Condition
@@ -1250,7 +1254,7 @@ namespace BHVEditor
         [Browsable(false)]
         [JsonIgnore]
         public int DataOffset { get; set; }
-
+        public string Expression {  get; set; }
         [Browsable(false)]
         [JsonIgnore]
         public int DataLength { get; set; }
@@ -1304,6 +1308,7 @@ namespace BHVEditor
                 DataLength = Data.Count;
             }
         }
+
 
     }
 

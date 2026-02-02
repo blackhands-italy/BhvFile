@@ -210,33 +210,67 @@ namespace BHVEditor
             if (currentFile?.States == null) return;
 
             // 先根据动画 ID 过滤状态
-var states = currentFile.States.Where(st => {
-    var sb1 = currentFile.StructBs.ElementAtOrDefault(st.StructBid);
-    var sb2 = currentFile.StructBs.ElementAtOrDefault(st.StructBsid2);
-    if (filterAnim1.HasValue && (sb1 == null || sb1.Unk00 != filterAnim1.Value)) return false;
-    if (filterAnim2.HasValue && (sb2 == null || sb2.Unk00 != filterAnim2.Value)) return false;
-    return true;
-}).ToList();
-
+            var states = currentFile.States.Where(st => {
+                var sb1 = currentFile.StructBs.ElementAtOrDefault(st.StructBid);
+                var sb2 = currentFile.StructBs.ElementAtOrDefault(st.StructBsid2);
+                if (filterAnim1.HasValue && (sb1 == null || sb1.Unk00 != filterAnim1.Value)) return false;
+                if (filterAnim2.HasValue && (sb2 == null || sb2.Unk00 != filterAnim2.Value)) return false;
+                return true;
+            }).ToList();
 
             int n = states.Count;
             if (n == 0) return;
-            int cols = (int)Math.Ceiling(Math.Sqrt(n));
-            int spacingX = nodeSize.Width + 50;
-            int spacingY = nodeSize.Height + 50;
-            for (int i = 0; i < n; i++)
+            // 2. 准备测量工具
+            using (Graphics g = this.CreateGraphics())
             {
-                var st = states[i];
-                int col = i % cols, row = i / cols;
-                var pos = new Point(50 + col * spacingX, 50 + row * spacingY);
-                // 节点名称里继续包含 structBid 和 structB2 的动画 ID
-                var sb1 = currentFile.StructBs.ElementAtOrDefault(st.StructBid);
-                var sb2 = currentFile.StructBs.ElementAtOrDefault(st.StructBsid2);
-                string name = $"S{st.Index} A1:{sb1?.Unk00 ?? -1} A2:{sb2?.Unk00 ?? -1}";
-                nodes.Add(new Node(st, name, pos));
+                // 预设最小尺寸
+                int minWidth = 120;
+                int minHeight = 60;
+                int padding = 20; // 边距
+
+                List<Size> nodeSizes = new List<Size>();
+                List<string> nodeTexts = new List<string>();
+
+                // 第一遍循环：计算所有文字的尺寸
+                for (int i = 0; i < n; i++)
+                {
+                    var st = states[i];
+                    var sb1 = currentFile.StructBs.ElementAtOrDefault(st.StructBid);
+                    var sb2 = currentFile.StructBs.ElementAtOrDefault(st.StructBsid2);
+
+                    string text = $"S{st.Index} A1:{sb1?.Unk00 ?? -1} A2:{sb2?.Unk00 ?? -1}";
+                    string dbgName = BhvDebugManager.GetStateName(st.Index);
+                    if (!string.IsNullOrEmpty(dbgName)) text += $"\n{dbgName}";
+                    // 添加转换数量信息
+                    if (st.Transitions != null && st.Transitions.Count > 0)
+                    {
+                        text += $"\n→{st.Transitions.Count}";
+                    }
+                    // 测量文字实际占用的空间
+                    SizeF textSize = g.MeasureString(text, nodeFont);
+                    int finalW = Math.Max(minWidth, (int)textSize.Width + padding);
+                    int finalH = Math.Max(minHeight, (int)textSize.Height + padding);
+
+                    nodeTexts.Add(text);
+                    nodeSizes.Add(new Size(finalW, finalH));
+                }
+
+                // 3. 计算布局（根据最大节点宽度来设定间距）
+                int maxNodeW = nodeSizes.Max(s => s.Width);
+                int maxNodeH = nodeSizes.Max(s => s.Height);
+                int cols = (int)Math.Ceiling(Math.Sqrt(n));
+                int spacingX = maxNodeW + 40;
+                int spacingY = maxNodeH + 40;
+
+                // 第二遍循环：生成节点
+                for (int i = 0; i < n; i++)
+                {
+                    int col = i % cols, row = i / cols;
+                    var pos = new Point(50 + col * spacingX, 50 + row * spacingY);
+                    nodes.Add(new Node(states[i], nodeTexts[i], pos, nodeSizes[i]));
+                }
             }
         }
-
         private void PushHistory()
         {
             if (historyIndex < history.Count - 1)
@@ -427,11 +461,19 @@ var states = currentFile.States.Where(st => {
             // draw nodes & quick trigger
             foreach (var nd in nodes)
             {
-                var rect = new Rectangle(nd.Position, nodeSize);
-                e.Graphics.FillRectangle(nodeFill, rect);
+                Rectangle rect = new Rectangle(nd.Position, nd.Size); // 使用节点实际大小
+
+                // 检查是否有调试信息
+                bool hasDebugInfo = !string.IsNullOrEmpty(BhvDebugManager.GetStateName(nd.State.Index));
+
+                // 有调试信息的节点使用不同颜色
+                var fillBrush = hasDebugInfo ? Brushes.LightGreen : nodeFill;
+                e.Graphics.FillRectangle(fillBrush, rect);
                 e.Graphics.DrawRectangle(new Pen(nodeBorder, 2), rect);
+
                 e.Graphics.DrawString(nd.Name, nodeFont, Brushes.Black, rect, textFmt);
-                // trigger
+
+                // 触发区域
                 var trig = new Point(rect.Right - QuickTriggerSize, rect.Top);
                 e.Graphics.FillEllipse(Brushes.Orange, new Rectangle(trig, new Size(QuickTriggerSize, QuickTriggerSize)));
             }
@@ -702,6 +744,25 @@ var states = currentFile.States.Where(st => {
             f.Controls.Add(pg);
             f.ShowDialog();
             PushHistory(); Invalidate();
+        }
+        public void SyncDebugInfo()
+        {
+            if (currentFile?.States == null) return;
+
+            foreach (var state in currentFile.States)
+            {
+                var debugTransitions = BhvDebugManager.GetDebugTransitions(state.Index);
+                if (debugTransitions.Count > 0)
+                {
+                    // 合并或替换现有的转换信息
+                    state.Transitions = debugTransitions;
+                    state.TransitionCount = state.Transitions.Count;
+                }
+            }
+
+            // 更新界面
+            BuildNodes();
+            Invalidate();
         }
         #endregion
     }
